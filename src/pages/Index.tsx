@@ -3,28 +3,34 @@ import { Header } from '@/components/Header';
 import { ProxyForm } from '@/components/ProxyForm';
 import { ProxyViewer } from '@/components/ProxyViewer';
 import { useHistory } from '@/hooks/useHistory';
+import { useTabs } from '@/contexts/TabContext';
 import { Shield, Zap, Lock } from 'lucide-react';
 import etownLogo from '@/assets/etown-logo.png';
 
 const Index = () => {
   const [isLoading, setIsLoading] = useState(false);
-  const [proxyContent, setProxyContent] = useState<{ content: string; url: string } | null>(null);
+  const [showHome, setShowHome] = useState(true);
   const { addToHistory } = useHistory();
+  const { tabs, activeTabId, addTab } = useTabs();
 
   const handleProxySuccess = (url: string, title: string, content: string) => {
     addToHistory(url, title);
-    setProxyContent({ content, url });
+    addTab(url, title, content);
+    setShowHome(false);
   };
 
-  if (proxyContent) {
-    return (
-      <ProxyViewer
-        content={proxyContent.content}
-        url={proxyContent.url}
-        onClose={() => setProxyContent(null)}
-      />
-    );
-  }
+  const handleReturnHome = () => {
+    setShowHome(true);
+  };
+
+  const handleReturnToTabs = () => {
+    if (tabs.length > 0) {
+      setShowHome(false);
+    }
+  };
+
+  // Show ProxyViewer if there are tabs and not explicitly on home
+  const showViewer = tabs.length > 0 && activeTabId && !showHome;
 
   return (
     <div className="min-h-screen gradient-bg">
@@ -53,6 +59,14 @@ const Index = () => {
               onSuccess={handleProxySuccess}
               onLoading={setIsLoading}
             />
+            {tabs.length > 0 && (
+              <button
+                onClick={handleReturnToTabs}
+                className="mt-4 text-sm text-primary hover:underline"
+              >
+                ← Return to open tabs ({tabs.length})
+              </button>
+            )}
           </div>
 
           {/* Features */}
@@ -75,6 +89,11 @@ const Index = () => {
           </div>
         </div>
       </main>
+
+      {/* Proxy Viewer Overlay */}
+      {showViewer && (
+        <ProxyViewer onNewTab={handleReturnHome} />
+      )}
     </div>
   );
 };
