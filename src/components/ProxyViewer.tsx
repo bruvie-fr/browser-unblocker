@@ -22,16 +22,35 @@ export function ProxyViewer({ onNewTab }: ProxyViewerProps) {
 
   const activeTab = tabs.find(tab => tab.id === activeTabId);
 
+  // Track pending resource requests to avoid duplicates
+  const pendingRequests = useRef<Set<string>>(new Set());
+
   // Fetch a resource through the proxy
   const fetchResource = useCallback(async (url: string, elementId: string) => {
+    // Avoid duplicate requests
+    const requestKey = `${url}-${elementId}`;
+    if (pendingRequests.current.has(requestKey)) {
+      console.log('Skipping duplicate resource request:', url);
+      return;
+    }
+    pendingRequests.current.add(requestKey);
+
     try {
       console.log('Fetching resource:', url);
       const { data, error } = await supabase.functions.invoke('proxy', {
         body: { url, mode: 'resource' }
       });
 
-      if (error || data.error) {
-        console.error('Resource fetch error:', error || data.error);
+      if (error || data?.error) {
+        console.error('Resource fetch error:', error || data?.error);
+        // Send error response back
+        if (iframeRef.current?.contentWindow) {
+          iframeRef.current.contentWindow.postMessage({
+            type: 'proxy-resource-response',
+            elementId,
+            error: error?.message || data?.error || 'Failed to load resource'
+          }, '*');
+        }
         return;
       }
 
@@ -46,6 +65,15 @@ export function ProxyViewer({ onNewTab }: ProxyViewerProps) {
       }
     } catch (err) {
       console.error('Failed to fetch resource:', err);
+      if (iframeRef.current?.contentWindow) {
+        iframeRef.current.contentWindow.postMessage({
+          type: 'proxy-resource-response',
+          elementId,
+          error: 'Network error'
+        }, '*');
+      }
+    } finally {
+      pendingRequests.current.delete(requestKey);
     }
   }, []);
 
