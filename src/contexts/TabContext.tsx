@@ -1,5 +1,26 @@
 import { createContext, useContext, useState, ReactNode } from 'react';
 
+// Helper function to generate unique IDs (works on HTTP and HTTPS)
+const generateId = (): string => {
+  // Try crypto.randomUUID first (requires secure context)
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  
+  // Fallback using crypto.getRandomValues (works on HTTP)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const array = new Uint8Array(16);
+    crypto.getRandomValues(array);
+    array[6] = (array[6] & 0x0f) | 0x40;
+    array[8] = (array[8] & 0x3f) | 0x80;
+    const hex = Array.from(array, b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+  }
+  
+  // Final fallback
+  return `${Date.now().toString(36)}-${Math.random().toString(36).substr(2, 9)}`;
+};
+
 export interface Tab {
   id: string;
   url: string;
@@ -24,7 +45,7 @@ export function TabProvider({ children }: { children: ReactNode }) {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
 
   const addTab = (url: string, title: string, content: string): string => {
-    const id = crypto.randomUUID();
+    const id = generateId();
     const newTab: Tab = { id, url, title, content };
     setTabs(prev => [...prev, newTab]);
     setActiveTabId(id);
