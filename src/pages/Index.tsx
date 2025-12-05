@@ -87,6 +87,11 @@ const Index = () => {
               description="Your history stays local on your device"
             />
           </div>
+
+          {/* Version */}
+          <div className="mt-16 text-xs text-muted-foreground/60">
+            v2.1.0 — Proactive Resource Proxying
+          </div>
         </div>
       </main>
 
