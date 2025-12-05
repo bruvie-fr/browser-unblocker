@@ -16,10 +16,38 @@ export function ProxyViewer({ onNewTab }: ProxyViewerProps) {
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [isNavigating, setIsNavigating] = useState(false);
   const [history, setHistory] = useState<{ [tabId: string]: { urls: string[], index: number } }>({});
+  const [currentBaseUrl, setCurrentBaseUrl] = useState<string>('');
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const { toast } = useToast();
 
   const activeTab = tabs.find(tab => tab.id === activeTabId);
+
+  // Fetch a resource through the proxy
+  const fetchResource = useCallback(async (url: string, elementId: string) => {
+    try {
+      console.log('Fetching resource:', url);
+      const { data, error } = await supabase.functions.invoke('proxy', {
+        body: { url, mode: 'resource' }
+      });
+
+      if (error || data.error) {
+        console.error('Resource fetch error:', error || data.error);
+        return;
+      }
+
+      // Send the resource back to the iframe
+      if (iframeRef.current?.contentWindow) {
+        iframeRef.current.contentWindow.postMessage({
+          type: 'proxy-resource-response',
+          elementId,
+          content: data.content,
+          contentType: data.contentType
+        }, '*');
+      }
+    } catch (err) {
+      console.error('Failed to fetch resource:', err);
+    }
+  }, []);
 
   // Navigate to URL through proxy
   const navigateToUrl = useCallback(async (url: string, addToHistory = true) => {
@@ -28,11 +56,16 @@ export function ProxyViewer({ onNewTab }: ProxyViewerProps) {
     setIsNavigating(true);
     try {
       const { data, error } = await supabase.functions.invoke('proxy', {
-        body: { url }
+        body: { url, mode: 'page' }
       });
 
       if (error) throw error;
       if (data.error) throw new Error(data.error);
+
+      // Store base URL for resource resolution
+      if (data.baseUrl) {
+        setCurrentBaseUrl(data.baseUrl);
+      }
 
       updateTab(activeTabId, {
         url: data.url || url,
@@ -68,12 +101,21 @@ export function ProxyViewer({ onNewTab }: ProxyViewerProps) {
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'proxy-navigate' && event.data?.url) {
         navigateToUrl(event.data.url);
+      } else if (event.data?.type === 'proxy-resource' && event.data?.url) {
+        // Resolve relative URLs
+        let resourceUrl = event.data.url;
+        if (resourceUrl.startsWith('/') && currentBaseUrl) {
+          resourceUrl = currentBaseUrl + resourceUrl;
+        } else if (!resourceUrl.startsWith('http') && currentBaseUrl) {
+          resourceUrl = currentBaseUrl + '/' + resourceUrl;
+        }
+        fetchResource(resourceUrl, event.data.elementId);
       }
     };
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [navigateToUrl]);
+  }, [navigateToUrl, fetchResource, currentBaseUrl]);
 
   // Initialize history for new tabs
   useEffect(() => {
