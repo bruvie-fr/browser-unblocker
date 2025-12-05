@@ -5,6 +5,18 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// Chunked base64 encoding that handles large files without stack overflow
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 8192;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode.apply(null, Array.from(chunk));
+  }
+  return btoa(binary);
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -48,10 +60,11 @@ serve(async (req) => {
     if (mode === 'resource') {
       const contentType = response.headers.get('content-type') || 'application/octet-stream';
       
-      // For images, convert to base64
+      // For images, convert to base64 using chunked encoding
       if (contentType.startsWith('image/')) {
         const buffer = await response.arrayBuffer();
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+        const base64 = arrayBufferToBase64(buffer);
+        console.log(`Converted image to base64, size: ${buffer.byteLength} bytes`);
         return new Response(
           JSON.stringify({ 
             content: `data:${contentType};base64,${base64}`,
@@ -95,65 +108,165 @@ serve(async (req) => {
         <meta http-equiv="X-Frame-Options" content="ALLOWALL">
       `;
       
-      // Injection script for navigation and resource interception
+      // Injection script for navigation and PROACTIVE resource loading
       const injectionScript = `
         <script>
         (function() {
-          const PROXY_BASE_URL = window.location.origin;
           const ORIGINAL_BASE_URL = '${baseUrl}';
-          
-          // Resource loading queue
-          const resourceQueue = [];
-          let isProcessing = false;
+          const pendingResources = new Map();
           
           // Request resource through parent
-          function requestResource(url, element, attr) {
+          function requestResourceThroughProxy(url, callback) {
+            const elementId = Math.random().toString(36).substr(2, 9);
+            pendingResources.set(elementId, callback);
+            
+            // Resolve relative URLs
+            let fullUrl = url;
+            if (url.startsWith('//')) {
+              fullUrl = 'https:' + url;
+            } else if (url.startsWith('/')) {
+              fullUrl = ORIGINAL_BASE_URL + url;
+            } else if (!url.startsWith('http')) {
+              fullUrl = ORIGINAL_BASE_URL + '/' + url;
+            }
+            
+            console.log('[Proxy] Requesting resource:', fullUrl);
             window.parent.postMessage({ 
               type: 'proxy-resource', 
-              url: url,
-              elementId: element.dataset.proxyId || Math.random().toString(36).substr(2, 9)
+              url: fullUrl,
+              elementId: elementId
             }, '*');
-            element.dataset.proxyId = element.dataset.proxyId || resourceQueue[resourceQueue.length - 1]?.elementId;
           }
           
           // Listen for proxied resources
           window.addEventListener('message', function(e) {
             if (e.data?.type === 'proxy-resource-response') {
-              const elements = document.querySelectorAll('[data-proxy-id="' + e.data.elementId + '"]');
-              elements.forEach(el => {
-                if (el.tagName === 'IMG') {
-                  el.src = e.data.content;
-                } else if (el.tagName === 'LINK') {
-                  const style = document.createElement('style');
-                  style.textContent = e.data.content;
-                  el.parentNode.insertBefore(style, el);
-                  el.remove();
-                } else if (el.tagName === 'SCRIPT' && el.dataset.proxySrc) {
-                  const newScript = document.createElement('script');
-                  newScript.textContent = e.data.content;
-                  el.parentNode.insertBefore(newScript, el);
-                  el.remove();
-                }
-              });
+              const callback = pendingResources.get(e.data.elementId);
+              if (callback) {
+                callback(e.data.content, e.data.error);
+                pendingResources.delete(e.data.elementId);
+              }
             }
           });
           
-          // Intercept image errors and reload through proxy
-          document.addEventListener('error', function(e) {
-            const el = e.target;
-            if (el.tagName === 'IMG' && !el.dataset.proxyAttempted) {
-              el.dataset.proxyAttempted = 'true';
-              const originalSrc = el.src || el.dataset.src;
-              if (originalSrc && !originalSrc.startsWith('data:')) {
-                el.dataset.proxyId = Math.random().toString(36).substr(2, 9);
-                window.parent.postMessage({ 
-                  type: 'proxy-resource', 
-                  url: originalSrc,
-                  elementId: el.dataset.proxyId
-                }, '*');
+          // PROACTIVE: Load all images through proxy immediately
+          function proxyAllImages() {
+            const images = document.querySelectorAll('img');
+            console.log('[Proxy] Found ' + images.length + ' images to proxy');
+            
+            images.forEach(function(img) {
+              const src = img.src || img.dataset.src || img.getAttribute('data-src');
+              if (!src || src.startsWith('data:') || img.dataset.proxyLoaded) return;
+              
+              // Mark as being processed
+              img.dataset.proxyLoaded = 'pending';
+              
+              // Store original src and clear it to prevent direct loading
+              const originalSrc = src;
+              img.removeAttribute('src');
+              
+              // Show loading state
+              img.style.opacity = '0.5';
+              img.style.minHeight = '50px';
+              img.style.minWidth = '50px';
+              img.style.backgroundColor = 'rgba(128,128,128,0.2)';
+              
+              requestResourceThroughProxy(originalSrc, function(content, error) {
+                if (content && !error) {
+                  img.src = content;
+                  img.dataset.proxyLoaded = 'true';
+                } else {
+                  // Fallback to original
+                  img.src = originalSrc;
+                  img.dataset.proxyLoaded = 'failed';
+                }
+                img.style.opacity = '';
+                img.style.minHeight = '';
+                img.style.minWidth = '';
+                img.style.backgroundColor = '';
+              });
+            });
+          }
+          
+          // Proxy background images in CSS
+          function proxyBackgroundImages() {
+            const elements = document.querySelectorAll('[style*="background"]');
+            elements.forEach(function(el) {
+              const style = el.getAttribute('style');
+              if (!style) return;
+              
+              const urlMatch = style.match(/url\\(['"]?([^'"\\)]+)['"]?\\)/);
+              if (urlMatch && urlMatch[1] && !urlMatch[1].startsWith('data:')) {
+                const originalUrl = urlMatch[1];
+                requestResourceThroughProxy(originalUrl, function(content, error) {
+                  if (content && !error) {
+                    const newStyle = style.replace(urlMatch[0], 'url(' + content + ')');
+                    el.setAttribute('style', newStyle);
+                  }
+                });
               }
-            }
-          }, true);
+            });
+          }
+          
+          // Handle dynamically added images
+          const observer = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+              mutation.addedNodes.forEach(function(node) {
+                if (node.nodeType === 1) {
+                  if (node.tagName === 'IMG') {
+                    proxyImage(node);
+                  }
+                  const imgs = node.querySelectorAll ? node.querySelectorAll('img') : [];
+                  imgs.forEach(proxyImage);
+                }
+              });
+            });
+          });
+          
+          function proxyImage(img) {
+            const src = img.src || img.dataset.src;
+            if (!src || src.startsWith('data:') || img.dataset.proxyLoaded) return;
+            
+            img.dataset.proxyLoaded = 'pending';
+            const originalSrc = src;
+            img.removeAttribute('src');
+            
+            requestResourceThroughProxy(originalSrc, function(content, error) {
+              if (content && !error) {
+                img.src = content;
+                img.dataset.proxyLoaded = 'true';
+              } else {
+                img.src = originalSrc;
+                img.dataset.proxyLoaded = 'failed';
+              }
+            });
+          }
+          
+          // Start observing for dynamic content
+          observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true
+          });
+          
+          // Run proactive loading when DOM is ready
+          if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', function() {
+              proxyAllImages();
+              proxyBackgroundImages();
+            });
+          } else {
+            proxyAllImages();
+            proxyBackgroundImages();
+          }
+          
+          // Also run after a short delay for lazy-loaded content
+          setTimeout(function() {
+            proxyAllImages();
+          }, 1000);
+          
+          setTimeout(function() {
+            proxyAllImages();
+          }, 3000);
           
           // Navigation interception
           document.addEventListener('click', function(e) {
@@ -188,17 +301,6 @@ serve(async (req) => {
               return null;
             }
             return originalOpen.apply(this, arguments);
-          };
-          
-          // Intercept fetch/XHR for resources
-          const originalFetch = window.fetch;
-          window.fetch = function(input, init) {
-            let url = typeof input === 'string' ? input : input.url;
-            // Let the parent handle API calls that might need proxying
-            return originalFetch.apply(this, arguments).catch(err => {
-              console.log('Fetch failed, might need proxy:', url);
-              throw err;
-            });
           };
         })();
         </script>
